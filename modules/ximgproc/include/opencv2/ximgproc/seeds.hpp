@@ -86,6 +86,39 @@ public:
     CV_WRAP virtual void getLabelContourMask(OutputArray image, bool thick_line = false) = 0;
 
     virtual ~SuperpixelSEEDS() {}
+
+
+    /* Spectral SEEDS */
+    /**
+     * generate a codebook from image data.
+     * @param input          see @iterateSpectral
+     */
+    CV_WRAP virtual void generateCodebook(InputArray input) = 0;
+
+    /**
+     * generate a codebook from a file
+     * @param file           codebook file. must contain histogram_bins * feature_count floats
+     */
+    CV_WRAP virtual void generateCodebook(const String& file) = 0;
+
+    /**
+     * calculate the segmentation on a given input using spectral SEEDS. Make
+     * sure a codebook was created beforehand.
+     * To get the result use getLabels().
+     *
+     * @param input          input image. this can be one of:
+     *                       Mat: number of channels must be total_channels
+     *                       vector<Mat>: this can be used for eg image + depth matrix.
+     *                         total number of channels must be total_channels.
+     *                         eg:
+     *                         vector<Mat> v;
+     *                         v.push_back(rgb_image);
+     *                         v.push_back(depth);
+     *                         seeds->iterateSpectral(v);
+     * @param num_iterations  number of SEEDS pixel level iterations
+     *
+     */
+    CV_WRAP virtual void iterateSpectral(InputArray input, int num_iterations = 4) = 0;
 };
 
 /*! Creates a SuperpixelSEEDS object.
@@ -110,6 +143,36 @@ CV_EXPORTS_W Ptr<SuperpixelSEEDS> createSuperpixelSEEDS(
     int num_superpixels, int num_levels, int prior = 2,
     int histogram_bins=5, bool double_step = false);
 
+/*! Creates a SuperpixelSEEDS object for spectral SEEDS
+ * @param filters_file      filter file that contains
+ *                          feature_size * filter_size^2 * total_channels floats
+ * @param filter_size       size of one filter in both x and y direction. usually 3
+ * @param feature_count     number of features (usually 27)
+ * @param total_channels    total number of channels (eg 3 for RGB image, 4 for RGB + depth, ...)
+ * @param histogram_bins    total number of histogram bins
+ * @param sparse_quantization
+ *                          in range [0, feature_count-1]. if 0 then don't use
+ *                          sparse quantization. otherwise it is the number of
+ *                          bits used for sparse quantization.
+ * @param image_width       image width
+ * @param image_height      image height
+ * @param num_superpixels   desired number of superpixels. Note that the actual
+ *                          number can be smaller due to further restrictions.
+ *                          use getNumberOfSuperpixels to get the actual number.
+ * @param num_levels        number of block levels: the more levels, the more
+ *                          accurate is the segmentation, but needs more memory
+ *                          and CPU time.
+ * @param prior             enable 3x3 shape smoothing term if >0. a larger value
+ *                          leads to smoother shapes.
+ *                          range: [0, 5]
+ * @param double_step       if true, iterate each block level twice for higher
+ *                          accuracy.
+ */
+CV_EXPORTS_W Ptr<SuperpixelSEEDS> createSuperpixelSpectralSEEDS(
+        const String& filters_file, int filter_size, int feature_count,
+        int total_channels, int histogram_bins, int sparse_quantization,
+        int image_width, int image_height, int num_superpixels, int num_levels,
+        int prior = 2, bool double_step = false);
 
 }
 }

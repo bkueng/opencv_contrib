@@ -75,10 +75,12 @@ int main(int argc, char** argv)
     int num_superpixels = 400;
     int num_levels = 4;
     int num_histogram_bins = 5;
+    int sparse_quantization = 1;
     createTrackbar("Number of Superpixels", window_name, &num_superpixels, 1000, trackbarChanged);
     createTrackbar("Smoothing Prior", window_name, &prior, 5, trackbarChanged);
     createTrackbar("Number of Levels", window_name, &num_levels, 10, trackbarChanged);
     createTrackbar("Iterations", window_name, &num_iterations, 12, 0);
+    createTrackbar("Sparse Quantization", window_name, &sparse_quantization, 26, trackbarChanged);
 
     Mat result, mask;
     Ptr<SuperpixelSEEDS> seeds;
@@ -100,16 +102,33 @@ int main(int argc, char** argv)
         {
             width = frame.size().width;
             height = frame.size().height;
+
+            double t_init = (double) getTickCount();
+
+            /*
             seeds = createSuperpixelSEEDS(width, height, frame.channels(), num_superpixels,
                     num_levels, prior, num_histogram_bins, double_step);
+            //*/
+
+            seeds = createSuperpixelSpectralSEEDS("filters_color.txt", 3, 27, 3, 150 //4999
+                    , sparse_quantization, width, height, num_superpixels,
+                    num_levels, prior, double_step);
+            //seeds->generateCodebook("codebook_color_train_set_desnormalized.txt");
+            seeds->generateCodebook(frame);
+
             init = true;
+
+            t_init = ((double) getTickCount() - t_init) / getTickFrequency();
+            printf("SEEDS initialization took %i ms\n", (int) (t_init * 1000));
         }
-        Mat converted;
-        cvtColor(frame, converted, COLOR_BGR2HSV);
+        //Mat converted;
+        //cvtColor(frame, converted, COLOR_BGR2HSV);
 
         double t = (double) getTickCount();
 
-        seeds->iterate(converted, num_iterations);
+        seeds->iterateSpectral(frame, num_iterations);
+        //seeds->iterate(converted, num_iterations);
+
         result = frame;
 
         t = ((double) getTickCount() - t) / getTickFrequency();
