@@ -52,7 +52,7 @@
 #include <algorithm>
 #include <vector>
 #include <cstdlib>
-#include <bitset>
+#include <limits>
 using namespace std;
 
 
@@ -87,13 +87,15 @@ public:
     virtual void generateCodebook(InputArray input);
     virtual void generateCodebook(const String& file);
     virtual void iterateSpectral(InputArray input, int num_iterations = 4);
-#define BITSET_SIZE 27
     void sort_idx(const float* feature, int* idx);
-    inline void quantizeFeature(const float* feature, bitset<BITSET_SIZE>& feature_bin);
+    typedef unsigned int BinaryCodebook;
+    inline void quantizeFeature(const float* feature, BinaryCodebook* feature_binary);
     inline void normalizeFeature(float* feature);
     inline void applyFilters(InputArray input, vector<Mat>& filter_output);
     inline void addFilterOutputToCodebook(const vector<Mat>& filter_output,
             int x, int y, int bin_index);
+    inline int binaryDistance(const BinaryCodebook* feature1, const BinaryCodebook* feature2) const;
+    static inline int popcount(unsigned int v);
 
     virtual ~SuperpixelSEEDSImpl();
 
@@ -197,7 +199,8 @@ private:
     int spec_sparse_quantization;
     vector<Mat> spec_filters;
     float* spec_codebook; //TODO: no explicit dynamic memory
-    bitset<BITSET_SIZE>* spec_binary_codebook; //TODO: make this dynamic length
+    BinaryCodebook* spec_binary_codebook;
+    int spec_binary_codebook_entry_size; //length of one entry -> from feature count
     int* spec_tmp_idx; //TODO: avoid this
     bool spec_codebook_exists;
 
@@ -292,10 +295,18 @@ void SuperpixelSEEDSImpl::initSpectralSEEDS(int filter_size, int feature_count,
 
 	spec_filter_size = filter_size;
 	spec_feature_count = feature_count;
+    const int bits_per_binary_entry = sizeof(BinaryCodebook) * CHAR_BIT;
+    spec_binary_codebook_entry_size = ((spec_feature_count
+            + ((bits_per_binary_entry) - 1)) & -bits_per_binary_entry) / bits_per_binary_entry;
 	spec_sparse_quantization = sparse_quantization;
     spec_codebook = new float[nr_bins * spec_feature_count];
-    if(spec_sparse_quantization)
-        spec_binary_codebook = new bitset<BITSET_SIZE>[nr_bins];
+    if( spec_sparse_quantization )
+    {
+        //allocate one more than number of bins: the last one is used as temporary variable
+        const int num_entries = spec_binary_codebook_entry_size*(nr_bins+1);
+        spec_binary_codebook = new BinaryCodebook[num_entries];
+        memset(spec_binary_codebook, 0, sizeof(BinaryCodebook)*num_entries);
+    }
     spec_tmp_idx = new int[spec_feature_count];
 
 	spec_filters.resize(nr_channels);
@@ -1345,7 +1356,7 @@ void SuperpixelSEEDSImpl::addFilterOutputToCodebook(
 
     if( spec_sparse_quantization )
     {
-        quantizeFeature(codebook_bin, spec_binary_codebook[bin_index]);
+        quantizeFeature(codebook_bin, spec_binary_codebook + spec_binary_codebook_entry_size*bin_index);
     }
     else
     {
@@ -1399,7 +1410,7 @@ void SuperpixelSEEDSImpl::generateCodebook(const String& file)
 
         if( spec_sparse_quantization )
         {
-            quantizeFeature(codebook_bin, spec_binary_codebook[bin]);
+            quantizeFeature(codebook_bin, spec_binary_codebook + spec_binary_codebook_entry_size*bin);
         }
         else
         {
@@ -1411,11 +1422,15 @@ void SuperpixelSEEDSImpl::generateCodebook(const String& file)
     spec_codebook_exists = true;
 }
 
-void SuperpixelSEEDSImpl::quantizeFeature(const float* feature, bitset<BITSET_SIZE>& feature_bin)
+void SuperpixelSEEDSImpl::quantizeFeature(const float* feature, BinaryCodebook* feature_binary)
 {
     sort_idx(feature, spec_tmp_idx);
-    for (int i = 0; i < spec_sparse_quantization; ++i)
-        feature_bin.set(spec_tmp_idx[i]);
+
+    for (int i = 0; i < spec_sparse_quantization; ++i) {
+        int idx = spec_tmp_idx[i] / (sizeof(BinaryCodebook)*CHAR_BIT);
+        int bit = spec_tmp_idx[i] % (sizeof(BinaryCodebook)*CHAR_BIT);
+        feature_binary[idx] |= 1 << bit;
+    }
 }
 
 void SuperpixelSEEDSImpl::normalizeFeature(float* feature)
@@ -1507,7 +1522,9 @@ void SuperpixelSEEDSImpl::iterateSpectral(InputArray input, int num_iterations)
     applyFilters(input, filter_output);
 
     //assign image_bins using filter_output
+    BinaryCodebook* tmp_binary_feature = spec_binary_codebook + nr_bins*spec_binary_codebook_entry_size;
     float* feature = new float[spec_feature_count]; //TODO: not dynamic...
+
     for (int y = 0; y < height; ++y)
     {
         for (int x = 0; x < width; ++x)
@@ -1520,15 +1537,17 @@ void SuperpixelSEEDSImpl::iterateSpectral(InputArray input, int num_iterations)
             //TODO: this is similar code as in codebook generation...
             if( spec_sparse_quantization )
             {
-                bitset<BITSET_SIZE> feature_bin;
-                quantizeFeature(feature, feature_bin);
+                for (int i = 0; i < spec_binary_codebook_entry_size; ++i)
+                    tmp_binary_feature[i] = 0;
+                quantizeFeature(feature, tmp_binary_feature);
 
                 //lookup
                 int min_distance = spec_feature_count;
 
                 for (int bin = 0; bin < nr_bins; ++bin)
                 {
-                    int current_distance = (feature_bin ^ spec_binary_codebook[bin]).count(); // XOR
+                    int current_distance = binaryDistance(tmp_binary_feature,
+                        spec_binary_codebook + spec_binary_codebook_entry_size*bin);
                     //TODO: AND distance function with max..?
 
                     if( current_distance < min_distance )
@@ -1580,6 +1599,25 @@ void SuperpixelSEEDSImpl::iterateSpectral(InputArray input, int num_iterations)
 
     for (int i = 0; i < num_iterations; ++i)
         updatePixels();
+}
+
+int SuperpixelSEEDSImpl::popcount(unsigned int v)
+{
+    //TODO: use popcnt instruction (?) -> but in a portable way!
+    //32 bit bitcounting
+    v = v - ((v >> 1) & 0x55555555);
+    v = (v & 0x33333333) + ((v >> 2) & 0x33333333);
+    return (((v + (v >> 4)) & 0xF0F0F0F) * 0x1010101) >> 24;
+}
+
+int SuperpixelSEEDSImpl::binaryDistance(const BinaryCodebook* feature1,
+        const BinaryCodebook* feature2) const
+{
+    int distance = 0;
+    /* hamming distance */
+    for (int i = 0; i < spec_binary_codebook_entry_size; ++i)
+        distance += popcount(feature1[i] ^ feature2[i]);
+    return distance;
 }
 
 const float *base_arr;
