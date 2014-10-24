@@ -79,11 +79,10 @@ public:
            int histogram_bins = 5,  bool double_step = false);
 
     /* spectral SEEDS */
-    SuperpixelSEEDSImpl(const String& filters_file, int total_channels,
-            int histogram_bins, int image_width, int image_height,
+    SuperpixelSEEDSImpl(int filter_size, int total_channels, int histogram_bins,
+            int sparse_quantization, int image_width, int image_height,
             int num_superpixels, int num_levels, int prior = 2,
             bool double_step = false);
-    void initSpectralSEEDS(int filter_size, int feature_count, int sparse_quantization);
     virtual void generateCodebook(InputArray input);
     virtual void generateCodebook(const String& file);
     virtual void iterateSpectral(InputArray input, int num_iterations = 4);
@@ -91,8 +90,9 @@ public:
     typedef unsigned int BinaryCodebook;
     inline void quantizeFeature(const float* feature, BinaryCodebook* feature_binary);
     inline void normalizeFeature(float* feature);
-    inline void applyFilters(InputArray input, vector<Mat>& filter_output);
-    inline void addFilterOutputToCodebook(const vector<Mat>& filter_output,
+    inline vector<Mat> extractChannels(InputArray input);
+    inline void extractFeature(const vector<Mat>& channels, int x, int y, float* feature_output);
+    inline void addImageFeatureToCodebook(const vector<Mat>& channels,
             int x, int y, int bin_index);
     inline int binaryDistance(const BinaryCodebook* feature1, const BinaryCodebook* feature2) const;
     static inline int popcount(unsigned int v);
@@ -193,11 +193,9 @@ private:
     vector<HISTN*> T; //[level][label] how many pixels with this label
 
     /* spectral SEEDS */
-    String spec_filters_file;
     int spec_filter_size;
     int spec_feature_count;
     int spec_sparse_quantization;
-    vector<Mat> spec_filters;
     float* spec_codebook; //TODO: no explicit dynamic memory
     BinaryCodebook* spec_binary_codebook;
     int spec_binary_codebook_entry_size; //length of one entry -> from feature count
@@ -225,18 +223,14 @@ CV_EXPORTS Ptr<SuperpixelSEEDS> createSuperpixelSEEDS(int image_width, int image
             num_superpixels, num_levels, prior, histogram_bins, double_step);
 }
 
-CV_EXPORTS_W Ptr<SuperpixelSEEDS> createSuperpixelSpectralSEEDS(
-	const String& filters_file, int filter_size, int feature_count,
-	int total_channels, int histogram_bins, int sparse_quantization,
-	int image_width, int image_height, int num_superpixels, int num_levels,
-	int prior, bool double_step)
+CV_EXPORTS_W Ptr<SuperpixelSEEDS> createSuperpixelSpectralSEEDS(int filter_size,
+        int total_channels, int histogram_bins, int sparse_quantization,
+        int image_width, int image_height, int num_superpixels, int num_levels,
+        int prior, bool double_step)
 {
-    Ptr<SuperpixelSEEDSImpl> ret = makePtr<SuperpixelSEEDSImpl>(filters_file,
-            total_channels, histogram_bins, image_width, image_height,
+    return makePtr<SuperpixelSEEDSImpl>(filter_size, total_channels,
+            histogram_bins, sparse_quantization, image_width, image_height,
             num_superpixels, num_levels, prior, double_step);
-    if( ret )
-        ret->initSpectralSEEDS(filter_size, feature_count, sparse_quantization);
-    return ret;
 }
 
 SuperpixelSEEDSImpl::SuperpixelSEEDSImpl(int image_width, int image_height, int image_channels,
@@ -263,10 +257,11 @@ SuperpixelSEEDSImpl::SuperpixelSEEDSImpl(int image_width, int image_height, int 
     initialize(num_superpixels, num_levels);
 }
 
-SuperpixelSEEDSImpl::SuperpixelSEEDSImpl(const String& filters_file,
-		int total_channels, int histogram_bins, int image_width,
-		int image_height, int num_superpixels, int num_levels, int prior,
-		bool double_step) {
+SuperpixelSEEDSImpl::SuperpixelSEEDSImpl(int filter_size, int total_channels, int histogram_bins,
+            int sparse_quantization, int image_width, int image_height,
+            int num_superpixels, int num_levels, int prior,
+            bool double_step)
+{
     width = image_width;
     height = image_height;
     nr_bins = histogram_bins;
@@ -278,23 +273,12 @@ SuperpixelSEEDSImpl::SuperpixelSEEDSImpl(const String& filters_file,
     spec_binary_codebook = NULL;
     spec_tmp_idx = NULL;
     spec_codebook_exists = false;
+    spec_filter_size = filter_size;
+    spec_feature_count = filter_size * filter_size * nr_channels;
 
-    histogram_size = nr_bins;
-    histogram_size_aligned = (histogram_size
-        + ((CV_MALLOC_ALIGN / sizeof(HISTN)) - 1)) & -static_cast<int>(CV_MALLOC_ALIGN / sizeof(HISTN));
+    CV_Assert( sparse_quantization >= 0 && sparse_quantization < spec_feature_count);
+    CV_Assert(filter_size > 0 && filter_size % 2 == 1);
 
-    initialize(num_superpixels, num_levels);
-
-    spec_filters_file = filters_file;
-}
-void SuperpixelSEEDSImpl::initSpectralSEEDS(int filter_size, int feature_count,
-    int sparse_quantization)
-{
-	CV_Assert(sparse_quantization >= 0 && sparse_quantization < feature_count);
-	CV_Assert(filter_size > 0);
-
-	spec_filter_size = filter_size;
-	spec_feature_count = feature_count;
     const int bits_per_binary_entry = sizeof(BinaryCodebook) * CHAR_BIT;
     spec_binary_codebook_entry_size = ((spec_feature_count
             + ((bits_per_binary_entry) - 1)) & -bits_per_binary_entry) / bits_per_binary_entry;
@@ -309,29 +293,13 @@ void SuperpixelSEEDSImpl::initSpectralSEEDS(int filter_size, int feature_count,
     }
     spec_tmp_idx = new int[spec_feature_count];
 
-	spec_filters.resize(nr_channels);
-	const int filter_size2 = spec_filter_size * spec_filter_size;
-    for (int i = 0; i < nr_channels; ++i)
-    {
-        spec_filters[i] = Mat(spec_feature_count, filter_size2, CV_32FC1);
-    }
 
-    //load the filters file
-    FILE* file_handle = fopen(spec_filters_file.c_str(), "r");
-    CV_Assert(file_handle);
 
-    for (int i = 0; i < spec_feature_count; i++)
-    {
-        for (int channel = 0; channel < nr_channels; ++channel)
-        {
-            float* chan_data = (float*) spec_filters[channel].data;
-            for (int p = 0; p < filter_size2; ++p)
-            {
-                fscanf(file_handle, "%f", chan_data + i * filter_size2 + p);
-            }
-        }
-    }
-    fclose(file_handle);
+    histogram_size = nr_bins;
+    histogram_size_aligned = (histogram_size
+        + ((CV_MALLOC_ALIGN / sizeof(HISTN)) - 1)) & -static_cast<int>(CV_MALLOC_ALIGN / sizeof(HISTN));
+
+    initialize(num_superpixels, num_levels);
 }
 
 SuperpixelSEEDSImpl::~SuperpixelSEEDSImpl()
@@ -1347,12 +1315,11 @@ void SuperpixelSEEDSImpl::getLabelContourMask(OutputArray image, bool thick_line
 
 
 
-void SuperpixelSEEDSImpl::addFilterOutputToCodebook(
-        const vector<Mat>& filter_output, int x, int y, int bin_index)
+void SuperpixelSEEDSImpl::addImageFeatureToCodebook(
+        const vector<Mat>& channels, int x, int y, int bin_index)
 {
     float* codebook_bin = spec_codebook + bin_index * spec_feature_count;
-    for (int i = 0; i < spec_feature_count; ++i)
-        codebook_bin[i] = (float) filter_output[i].at<float>(y, x);
+    extractFeature(channels, x, y, codebook_bin);
 
     if( spec_sparse_quantization )
     {
@@ -1366,9 +1333,7 @@ void SuperpixelSEEDSImpl::addFilterOutputToCodebook(
 
 void SuperpixelSEEDSImpl::generateCodebook(InputArray input)
 {
-    //apply filters
-    vector<Mat> filter_output(spec_feature_count);
-    applyFilters(input, filter_output);
+    vector<Mat> channels = extractChannels(input);
 
     int bin = 0;
     if( spec_sparse_quantization )
@@ -1382,7 +1347,7 @@ void SuperpixelSEEDSImpl::generateCodebook(InputArray input)
             int rn = (height - y) * width;
             if( rand() % rn < nr_bins - bin )
             {
-                addFilterOutputToCodebook(filter_output, x, y, bin++);
+                addImageFeatureToCodebook(channels, x, y, bin++);
             }
         }
     }
@@ -1392,7 +1357,7 @@ void SuperpixelSEEDSImpl::generateCodebook(InputArray input)
     {
         int x = rand() % width;
         int y = rand() % height;
-        addFilterOutputToCodebook(filter_output, x, y, bin++);
+        addImageFeatureToCodebook(channels, x, y, bin++);
     }
     spec_codebook_exists = true;
 }
@@ -1446,9 +1411,8 @@ void SuperpixelSEEDSImpl::normalizeFeature(float* feature)
         feature[i] *= norm;
 }
 
-void SuperpixelSEEDSImpl::applyFilters(InputArray input, vector<Mat>& filter_output)
+vector<Mat> SuperpixelSEEDSImpl::extractChannels(InputArray input)
 {
-    //extract input channels
     vector<Mat> input_channels(nr_channels);
     if( input.isMatVector() )
     {
@@ -1479,31 +1443,26 @@ void SuperpixelSEEDSImpl::applyFilters(InputArray input, vector<Mat>& filter_out
     for (int i = 0; i < nr_channels; ++i)
         input_channels[i].convertTo(input_channels[i], CV_32F);
 
-    //we assume filter_output is either empty or the matrices do not contain
-    //any data yet
-    filter_output.resize(spec_feature_count);
-    const int filter_size2 = spec_filter_size * spec_filter_size;
+    return input_channels;
+}
 
-    //apply filters
-    for (int i = 0; i < spec_feature_count; i++)
+void SuperpixelSEEDSImpl::extractFeature(const vector<Mat>& channels, int x, int y,
+        float* feature_output)
+{
+    int filter_half = spec_filter_size / 2;
+    for (int chan = 0; chan < nr_channels; ++chan)
     {
-        /* filter configuration */
-        Point anchor = Point(-1, -1);
-        double delta = 0;
-        int ddepth = CV_32F;
-        Mat temp;
-
-        int channel = 0;
-        float* filter_data = (float*) spec_filters[channel].data;
-        Mat kernel = Mat(spec_filter_size, spec_filter_size, CV_32F, filter_data + i * filter_size2);
-        filter2D(input_channels[channel], filter_output[i], ddepth, kernel, anchor, delta, cv::BORDER_DEFAULT);
-        ++channel;
-        for (; channel < nr_channels; ++channel)
+        const Mat& mat = channels[chan];
+        for (int yy = -filter_half; yy <= filter_half; ++yy)
         {
-            filter_data = (float*) spec_filters[channel].data;
-            kernel = Mat(spec_filter_size, spec_filter_size, CV_32F, filter_data + i * filter_size2);
-            filter2D(input_channels[channel], temp, ddepth, kernel, anchor, delta, cv::BORDER_DEFAULT);
-            filter_output[i] += temp;
+            int yi = abs(y + yy);
+            if( yi >= width ) yi = 2 * (width - 1) - yi;
+            for (int xx = -filter_half; xx <= filter_half; ++xx)
+            {
+                int xi = abs(x + xx);
+                if( xi >= width ) xi = 2 * (width - 1) - xi;
+                *(feature_output++) = mat.at<float>(yi, xi);
+            }
         }
     }
 }
@@ -1517,11 +1476,9 @@ void SuperpixelSEEDSImpl::iterateSpectral(InputArray input, int num_iterations)
 
     assignLabels();
 
-    //apply filters
-    vector<Mat> filter_output(spec_feature_count);
-    applyFilters(input, filter_output);
+    vector<Mat> channels = extractChannels(input);
 
-    //assign image_bins using filter_output
+    //assign image_bins using input channels
     BinaryCodebook* tmp_binary_feature = spec_binary_codebook + nr_bins*spec_binary_codebook_entry_size;
     float* feature = new float[spec_feature_count]; //TODO: not dynamic...
 
@@ -1530,9 +1487,7 @@ void SuperpixelSEEDSImpl::iterateSpectral(InputArray input, int num_iterations)
         for (int x = 0; x < width; ++x)
         {
             int bin_index = 0;
-
-            for (int i = 0; i < spec_feature_count; ++i)
-                feature[i] = (float) filter_output[i].at<float>(y, x);
+            extractFeature(channels, x, y, feature);
 
             //TODO: this is similar code as in codebook generation...
             if( spec_sparse_quantization )

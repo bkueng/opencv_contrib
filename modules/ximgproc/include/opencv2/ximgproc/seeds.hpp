@@ -90,14 +90,15 @@ public:
 
     /* Spectral SEEDS */
     /**
-     * generate a codebook from image data.
-     * @param input          see @iterateSpectral
+     * generate a random codebook from image data.
+     * @param input          @see iterateSpectral
      */
     CV_WRAP virtual void generateCodebook(InputArray input) = 0;
 
     /**
      * generate a codebook from a file
      * @param file           codebook file. must contain histogram_bins * feature_count floats
+     *                       where feature_count = total_channels * filter_size^2
      */
     CV_WRAP virtual void generateCodebook(const String& file) = 0;
 
@@ -144,10 +145,7 @@ CV_EXPORTS_W Ptr<SuperpixelSEEDS> createSuperpixelSEEDS(
     int histogram_bins=5, bool double_step = false);
 
 /*! Creates a SuperpixelSEEDS object for spectral SEEDS
- * @param filters_file      filter file that contains
- *                          feature_size * filter_size^2 * total_channels floats
- * @param filter_size       size of one filter in both x and y direction. usually 3
- * @param feature_count     number of features (usually 27)
+ * @param filter_size       size of one filter in both x and y direction. must be odd. usually 3
  * @param total_channels    total number of channels (eg 3 for RGB image, 4 for RGB + depth, ...)
  * @param histogram_bins    total number of histogram bins
  * @param sparse_quantization
@@ -168,8 +166,7 @@ CV_EXPORTS_W Ptr<SuperpixelSEEDS> createSuperpixelSEEDS(
  * @param double_step       if true, iterate each block level twice for higher
  *                          accuracy.
  */
-CV_EXPORTS_W Ptr<SuperpixelSEEDS> createSuperpixelSpectralSEEDS(
-        const String& filters_file, int filter_size, int feature_count,
+CV_EXPORTS_W Ptr<SuperpixelSEEDS> createSuperpixelSpectralSEEDS(int filter_size,
         int total_channels, int histogram_bins, int sparse_quantization,
         int image_width, int image_height, int num_superpixels, int num_levels,
         int prior = 2, bool double_step = false);

@@ -110,7 +110,7 @@ int main(int argc, char** argv)
                     num_levels, prior, num_histogram_bins, double_step);
             //*/
 
-            seeds = createSuperpixelSpectralSEEDS("filters_color.txt", 3, 27, 3, 150 //4999
+            seeds = createSuperpixelSpectralSEEDS(3, 3, 150 //4999
                     , sparse_quantization, width, height, num_superpixels,
                     num_levels, prior, double_step);
             //seeds->generateCodebook("codebook_color_train_set_desnormalized.txt");
