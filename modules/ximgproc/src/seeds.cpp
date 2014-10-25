@@ -97,6 +97,7 @@ public:
     inline int binaryDistance(const BinaryCodebook* feature1, const BinaryCodebook* feature2) const;
     static inline int popcount(unsigned int v);
     void assignBinsSpectral(InputArray input);
+    void resetCodebook();
 
     virtual ~SuperpixelSEEDSImpl();
 
@@ -290,7 +291,6 @@ SuperpixelSEEDSImpl::SuperpixelSEEDSImpl(int filter_size, int total_channels, in
         //allocate one more than number of bins: the last one is used as temporary variable
         const int num_entries = spec_binary_codebook_entry_size*(nr_bins+1);
         spec_binary_codebook = new BinaryCodebook[num_entries];
-        memset(spec_binary_codebook, 0, sizeof(BinaryCodebook)*num_entries);
     }
     spec_tmp_idx = new int[spec_feature_count];
 
@@ -1337,6 +1337,7 @@ void SuperpixelSEEDSImpl::generateCodebook(InputArray input)
     vector<Mat> channels = extractChannels(input);
     for (int i = 0; i < spec_feature_count; ++i)
         spec_tmp_idx[i] = i;
+    resetCodebook();
 
     int bin = 0;
     if( spec_sparse_quantization )
@@ -1365,10 +1366,20 @@ void SuperpixelSEEDSImpl::generateCodebook(InputArray input)
     spec_codebook_exists = true;
 }
 
+void SuperpixelSEEDSImpl::resetCodebook()
+{
+    if( spec_sparse_quantization )
+    {
+        const int num_entries = spec_binary_codebook_entry_size * (nr_bins + 1);
+        memset(spec_binary_codebook, 0, sizeof(BinaryCodebook) * num_entries);
+    }
+}
+
 void SuperpixelSEEDSImpl::generateCodebook(const String& file)
 {
     for (int i = 0; i < spec_feature_count; ++i)
         spec_tmp_idx[i] = i;
+    resetCodebook();
 
     FILE* file_handle = fopen(file.c_str(), "r");
     if( !file_handle )
