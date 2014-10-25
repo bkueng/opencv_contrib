@@ -1366,13 +1366,20 @@ void SuperpixelSEEDSImpl::generateCodebook(InputArray input)
 void SuperpixelSEEDSImpl::generateCodebook(const String& file)
 {
     FILE* file_handle = fopen(file.c_str(), "r");
-    CV_Assert(file_handle);
+    if( !file_handle )
+        throw cv::Exception(cv::Error::StsBadArg,
+                "Failed to open codebook file", "", __FILE__, __LINE__);
 
     for (int bin = 0; bin < nr_bins; ++bin)
     {
         float* codebook_bin = spec_codebook + bin * spec_feature_count;
         for (int m = 0; m < spec_feature_count; ++m)
-            fscanf(file_handle, "%f", codebook_bin + m);
+        {
+            int num_read = fscanf(file_handle, "%f", codebook_bin + m);
+            if( num_read != 1 )
+                throw cv::Exception(cv::Error::StsParseError,
+                        "Codebook file format error", "", __FILE__, __LINE__);
+        }
 
         if( spec_sparse_quantization )
         {
