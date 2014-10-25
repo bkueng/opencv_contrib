@@ -96,6 +96,7 @@ public:
             int x, int y, int bin_index);
     inline int binaryDistance(const BinaryCodebook* feature1, const BinaryCodebook* feature2) const;
     static inline int popcount(unsigned int v);
+    void assignBinsSpectral(InputArray input);
 
     virtual ~SuperpixelSEEDSImpl();
 
@@ -1466,16 +1467,8 @@ void SuperpixelSEEDSImpl::extractFeature(const vector<Mat>& channels, int x, int
         }
     }
 }
-
-void SuperpixelSEEDSImpl::iterateSpectral(InputArray input, int num_iterations)
+void SuperpixelSEEDSImpl::assignBinsSpectral(InputArray input)
 {
-    CV_Assert(spec_codebook_exists);
-
-    seeds_current_level = seeds_nr_levels - 2;
-    forwardbackward = true;
-
-    assignLabels();
-
     vector<Mat> channels = extractChannels(input);
 
     //assign image_bins using input channels
@@ -1522,8 +1515,9 @@ void SuperpixelSEEDSImpl::iterateSpectral(InputArray input, int num_iterations)
                 for (int bin = 0; bin < nr_bins; ++bin)
                 {
                     float current_distance = 0;
+                    float* codebook_bin = spec_codebook + bin * spec_feature_count;
                     for (int j = 0; j < spec_feature_count; ++j)
-                        current_distance += feature[j] * spec_codebook[bin * spec_feature_count + j];
+                        current_distance += feature[j] * codebook_bin[j];
 
                     if( current_distance > max_distance )
                     {
@@ -1536,7 +1530,18 @@ void SuperpixelSEEDSImpl::iterateSpectral(InputArray input, int num_iterations)
         }
     }
     delete[] (feature);
+}
 
+void SuperpixelSEEDSImpl::iterateSpectral(InputArray input, int num_iterations)
+{
+    CV_Assert(spec_codebook_exists);
+
+    seeds_current_level = seeds_nr_levels - 2;
+    forwardbackward = true;
+
+    assignLabels();
+
+    assignBinsSpectral(input);
 
     //TODO: duplicate code from SEEDS::iterate...
     computeHistograms();
