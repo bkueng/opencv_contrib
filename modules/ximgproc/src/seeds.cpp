@@ -86,7 +86,7 @@ public:
     virtual void generateCodebook(InputArray input);
     virtual void generateCodebook(const String& file);
     virtual void iterateSpectral(InputArray input, int num_iterations = 4);
-    void sort_idx(const float* feature, int* idx);
+    inline void sortNIndexed(const float* feature, int* idx);
     typedef unsigned int BinaryCodebook;
     inline void quantizeFeature(const float* feature, BinaryCodebook* feature_binary);
     inline void normalizeFeature(float* feature);
@@ -200,7 +200,7 @@ private:
     float* spec_codebook; //TODO: no explicit dynamic memory
     BinaryCodebook* spec_binary_codebook;
     int spec_binary_codebook_entry_size; //length of one entry -> from feature count
-    int* spec_tmp_idx; //TODO: avoid this
+    int* spec_tmp_idx; //TODO: not dynamic
     bool spec_codebook_exists;
 
 
@@ -1335,6 +1335,8 @@ void SuperpixelSEEDSImpl::addImageFeatureToCodebook(
 void SuperpixelSEEDSImpl::generateCodebook(InputArray input)
 {
     vector<Mat> channels = extractChannels(input);
+    for (int i = 0; i < spec_feature_count; ++i)
+        spec_tmp_idx[i] = i;
 
     int bin = 0;
     if( spec_sparse_quantization )
@@ -1365,6 +1367,9 @@ void SuperpixelSEEDSImpl::generateCodebook(InputArray input)
 
 void SuperpixelSEEDSImpl::generateCodebook(const String& file)
 {
+    for (int i = 0; i < spec_feature_count; ++i)
+        spec_tmp_idx[i] = i;
+
     FILE* file_handle = fopen(file.c_str(), "r");
     if( !file_handle )
         throw cv::Exception(cv::Error::StsBadArg,
@@ -1397,7 +1402,7 @@ void SuperpixelSEEDSImpl::generateCodebook(const String& file)
 
 void SuperpixelSEEDSImpl::quantizeFeature(const float* feature, BinaryCodebook* feature_binary)
 {
-    sort_idx(feature, spec_tmp_idx);
+    sortNIndexed(feature, spec_tmp_idx);
 
     for (int i = 0; i < spec_sparse_quantization; ++i) {
         int idx = spec_tmp_idx[i] / (sizeof(BinaryCodebook)*CHAR_BIT);
@@ -1481,6 +1486,8 @@ void SuperpixelSEEDSImpl::assignBinsSpectral(InputArray input)
     //assign image_bins using input channels
     BinaryCodebook* tmp_binary_feature = spec_binary_codebook + nr_bins*spec_binary_codebook_entry_size;
     float* feature = new float[spec_feature_count]; //TODO: not dynamic...
+    for (int i = 0; i < spec_feature_count; ++i)
+        spec_tmp_idx[i] = i;
 
     for (int y = 0; y < height; ++y)
     {
@@ -1587,26 +1594,23 @@ int SuperpixelSEEDSImpl::binaryDistance(const BinaryCodebook* feature1,
     return distance;
 }
 
-const float *base_arr;
-
-static int compar(const int& a, const int& b)
+void SuperpixelSEEDSImpl::sortNIndexed(const float* feature, int* idx)
 {
-    return base_arr[a] > base_arr[b];
-}
-
-void SuperpixelSEEDSImpl::sort_idx(const float* feature, int* idx)
-{
-    base_arr = feature;
-
-    //sort idx such that largest feature is first
-
-    //TODO: improve this
-    for (int i = 0; i < spec_feature_count; ++i)
-        idx[i] = i;
-
-    int *end = idx + spec_feature_count;
-    std::sort(idx, end, compar);
-
+    //sort idx such that largest N features are first
+    for (int i = 0; i < spec_sparse_quantization; ++i)
+    {
+        float largest = feature[idx[i]];
+        int largest_idx = i;
+        for (int j = i + 1; j < spec_feature_count; ++j)
+        {
+            if( largest < feature[idx[j]] )
+            {
+                largest_idx = j;
+                largest = feature[idx[j]];
+            }
+        }
+        std::swap(idx[i], idx[largest_idx]);
+    }
 }
 
 
