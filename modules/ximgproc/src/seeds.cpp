@@ -1480,7 +1480,7 @@ void SuperpixelSEEDSImpl::extractFeature(const vector<Mat>& channels, int x, int
         for (int yy = -filter_half; yy <= filter_half; ++yy)
         {
             int yi = abs(y + yy);
-            if( yi >= width ) yi = 2 * (width - 1) - yi;
+            if( yi >= height ) yi = 2 * (height - 1) - yi;
             for (int xx = -filter_half; xx <= filter_half; ++xx)
             {
                 int xi = abs(x + xx);
