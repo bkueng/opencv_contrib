@@ -98,6 +98,8 @@ public:
     static inline int popcount(unsigned int v);
     void assignBinsSpectral(InputArray input);
     void resetCodebook();
+    inline int binIndexSQLUT(float* feature);
+    inline int binIndexSQ(float* feature);
 
     virtual ~SuperpixelSEEDSImpl();
 
@@ -203,6 +205,8 @@ private:
     int spec_binary_codebook_entry_size; //length of one entry -> from feature count
     int* spec_tmp_idx; //TODO: not dynamic
     bool spec_codebook_exists;
+    int* spec_lut; //TODO: not dynamic
+    int spec_lut_next_free;
 
 
     /* OpenCV containers for our memory arrays. This makes sure memory is
@@ -249,6 +253,7 @@ SuperpixelSEEDSImpl::SuperpixelSEEDSImpl(int image_width, int image_height, int 
     spec_binary_codebook = NULL;
     spec_tmp_idx = NULL;
     spec_codebook_exists = false;
+    spec_lut = NULL;
 
     histogram_size = nr_bins;
     for (int i = 1; i < nr_channels; ++i)
@@ -275,6 +280,7 @@ SuperpixelSEEDSImpl::SuperpixelSEEDSImpl(int filter_size, int total_channels, in
     spec_binary_codebook = NULL;
     spec_tmp_idx = NULL;
     spec_codebook_exists = false;
+    spec_lut = NULL;
     spec_filter_size = filter_size;
     spec_feature_count = filter_size * filter_size * nr_channels;
 
@@ -291,6 +297,19 @@ SuperpixelSEEDSImpl::SuperpixelSEEDSImpl(int filter_size, int total_channels, in
         //allocate one more than number of bins: the last one is used as temporary variable
         const int num_entries = spec_binary_codebook_entry_size*(nr_bins+1);
         spec_binary_codebook = new BinaryCodebook[num_entries];
+
+        int lut_size = spec_feature_count;
+        int decreased_features = spec_feature_count;
+        int factor = spec_feature_count;
+        for (int i = 0; i < spec_sparse_quantization - 1; ++i)
+        {
+            factor *= decreased_features;
+            lut_size += factor;
+            --decreased_features;
+        }
+        spec_lut = new int[lut_size];
+        memset(spec_lut, -1, sizeof(int) * lut_size);
+        spec_lut_next_free = spec_feature_count;
     }
     spec_tmp_idx = new int[spec_feature_count];
 
@@ -308,6 +327,7 @@ SuperpixelSEEDSImpl::~SuperpixelSEEDSImpl()
     if(spec_codebook) delete[](spec_codebook);
     if(spec_binary_codebook) delete[](spec_binary_codebook);
     if(spec_tmp_idx) delete[](spec_tmp_idx);
+    if(spec_lut) delete[](spec_lut);
 }
 
 
@@ -1372,6 +1392,7 @@ void SuperpixelSEEDSImpl::resetCodebook()
     {
         const int num_entries = spec_binary_codebook_entry_size * (nr_bins + 1);
         memset(spec_binary_codebook, 0, sizeof(BinaryCodebook) * num_entries);
+        //TODO: reset lookup table
     }
 }
 
@@ -1490,12 +1511,63 @@ void SuperpixelSEEDSImpl::extractFeature(const vector<Mat>& channels, int x, int
         }
     }
 }
+int SuperpixelSEEDSImpl::binIndexSQLUT(float* feature)
+{
+    //to disable Lookup-table:
+    //return binIndexSQ(feature);
+
+    sortNIndexed(feature, spec_tmp_idx);
+
+    //iterate lookup-table
+    int* lut_idx = spec_lut;
+    for (int i = 0; i < spec_sparse_quantization - 1; ++i)
+    {
+        int& next = lut_idx[spec_tmp_idx[i]];
+        if( next == -1 )
+        {
+            next = spec_lut_next_free;
+            spec_lut_next_free += spec_feature_count;
+        }
+        lut_idx = spec_lut + next;
+    }
+    int& bin_idx = lut_idx[spec_tmp_idx[spec_sparse_quantization - 1]];
+    if( bin_idx == -1 )
+        bin_idx = binIndexSQ(feature);
+    return bin_idx;
+}
+
+int SuperpixelSEEDSImpl::binIndexSQ(float* feature)
+{
+
+    int bin_index = 0;
+    BinaryCodebook* tmp_binary_feature = spec_binary_codebook + nr_bins*spec_binary_codebook_entry_size;
+    for (int i = 0; i < spec_binary_codebook_entry_size; ++i)
+        tmp_binary_feature[i] = 0;
+    quantizeFeature(feature, tmp_binary_feature);
+
+    //minimum distance in codebook
+    int min_distance = spec_feature_count;
+    for (int bin = 0; bin < nr_bins; ++bin)
+    {
+        int current_distance = binaryDistance(tmp_binary_feature,
+                spec_binary_codebook + spec_binary_codebook_entry_size*bin);
+        //TODO: AND distance function with max..?
+
+        if( current_distance < min_distance )
+        {
+            min_distance = current_distance;
+            bin_index = bin;
+            if( current_distance == 0 )
+                break;
+        }
+    }
+    return bin_index;
+}
 void SuperpixelSEEDSImpl::assignBinsSpectral(InputArray input)
 {
     vector<Mat> channels = extractChannels(input);
 
     //assign image_bins using input channels
-    BinaryCodebook* tmp_binary_feature = spec_binary_codebook + nr_bins*spec_binary_codebook_entry_size;
     float* feature = new float[spec_feature_count]; //TODO: not dynamic...
     for (int i = 0; i < spec_feature_count; ++i)
         spec_tmp_idx[i] = i;
@@ -1510,27 +1582,7 @@ void SuperpixelSEEDSImpl::assignBinsSpectral(InputArray input)
             //TODO: this is similar code as in codebook generation...
             if( spec_sparse_quantization )
             {
-                for (int i = 0; i < spec_binary_codebook_entry_size; ++i)
-                    tmp_binary_feature[i] = 0;
-                quantizeFeature(feature, tmp_binary_feature);
-
-                //lookup
-                int min_distance = spec_feature_count;
-
-                for (int bin = 0; bin < nr_bins; ++bin)
-                {
-                    int current_distance = binaryDistance(tmp_binary_feature,
-                        spec_binary_codebook + spec_binary_codebook_entry_size*bin);
-                    //TODO: AND distance function with max..?
-
-                    if( current_distance < min_distance )
-                    {
-                        min_distance = current_distance;
-                        bin_index = bin;
-                        if( current_distance == 0 )
-                            break;
-                    }
-                }
+                bin_index = binIndexSQLUT(feature);
             }
             else
             {
