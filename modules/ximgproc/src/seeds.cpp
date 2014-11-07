@@ -99,7 +99,9 @@ public:
     void assignBinsSpectral(InputArray input);
     void resetCodebook();
     inline int binIndexSQLUT(float* feature);
+    inline int binIndexSQLUT(const Mat& m, int x, int y);
     inline int binIndexSQ(float* feature);
+    inline int binIndexSQ(unsigned char patch[]);
 
     virtual ~SuperpixelSEEDSImpl();
 
@@ -1535,6 +1537,72 @@ int SuperpixelSEEDSImpl::binIndexSQLUT(float* feature)
         bin_idx = binIndexSQ(feature);
     return bin_idx;
 }
+int SuperpixelSEEDSImpl::binIndexSQLUT(const Mat& m, int x, int y)
+{
+    //iterate pixels in patch
+    //3x3 patch
+    unsigned char patch[3*3*3];
+    int patch_idx=0;
+    for(int chan=0; chan<3; ++chan) {
+        for(int yy=y-1; yy<=y+1; ++yy)
+        {
+            for(int xx=x-1; xx<=x+1; ++xx)
+            {
+                patch[patch_idx++] = m.at<cv::Vec3b>(yy,xx)[chan];
+            }
+        }
+    }
+    //return binIndexSQ(patch);
+
+    //extract n largest: insertion sort
+    int indexes[27];
+    indexes[0]=0;
+    int j;
+    for (int i = 1; i < 27; i++) {
+        unsigned char tmp = patch[i];
+        int tmp_idx = indexes[i] = i;
+        for (j = min(i, spec_sparse_quantization); j >= 1 && tmp > patch[j - 1]; j--) {
+            patch[j] = patch[j - 1];
+            indexes[j] = indexes[j-1];
+        }
+        patch[j] = tmp;
+        indexes[j] = tmp_idx;
+    }
+
+    //iterate LUT table
+    int* lut_idx = spec_lut;
+    for (int i = 0; i < spec_sparse_quantization - 1; ++i)
+    {
+        int& next = lut_idx[indexes[i]];
+        if( next == -1 )
+        {
+            next = spec_lut_next_free;
+            spec_lut_next_free += spec_feature_count;
+        }
+        lut_idx = spec_lut + next;
+    }
+    int& bin_idx = lut_idx[indexes[spec_sparse_quantization - 1]];
+    if( bin_idx == -1 ) {
+        int patch_idx=0;
+        for(int chan=0; chan<3; ++chan) {
+            for(int yy=y-1; yy<=y+1; ++yy)
+            {
+                for(int xx=x-1; xx<=x+1; ++xx)
+                {
+                    patch[patch_idx++] = m.at<cv::Vec3b>(yy,xx)[chan];
+                }
+            }
+        }
+        bin_idx = binIndexSQ(patch);
+    }
+    return bin_idx;
+}
+int SuperpixelSEEDSImpl::binIndexSQ(unsigned char patch[])
+{
+    float feature[27];
+    for(int i=0; i<27; ++i) feature[i] = (float)patch[i];
+    return binIndexSQ(feature);
+}
 
 int SuperpixelSEEDSImpl::binIndexSQ(float* feature)
 {
@@ -1565,6 +1633,36 @@ int SuperpixelSEEDSImpl::binIndexSQ(float* feature)
 }
 void SuperpixelSEEDSImpl::assignBinsSpectral(InputArray input)
 {
+    if(spec_sparse_quantization) {
+        for (int i = 0; i < spec_feature_count; ++i)
+            spec_tmp_idx[i] = i;
+        Mat m = input.getMat();
+
+        //TODO: proper border
+        for (int y = 0; y < height; ++y)
+        {
+            int x=0;
+            image_bins[y * width + x] = 0;
+            x=width-1;
+            image_bins[y * width + x] = 0;
+        }
+        for (int x = 0; x < width; ++x)
+        {
+            int y=0;
+            image_bins[y * width + x] = 0;
+            y=height-1;
+            image_bins[y * width + x] = 0;
+        }
+
+        for (int y = 1; y < height-1; ++y)
+        {
+            for (int x = 1; x < width-1; ++x)
+            {
+                image_bins[y * width + x] = binIndexSQLUT(m, x, y);
+            }
+        }
+        return;
+    }
     vector<Mat> channels = extractChannels(input);
 
     //assign image_bins using input channels
