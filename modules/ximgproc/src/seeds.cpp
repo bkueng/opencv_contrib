@@ -85,7 +85,7 @@ public:
             bool double_step = false);
     virtual void generateCodebook(InputArray input);
     virtual void generateCodebook(const String& file);
-    virtual void iterateSpectral(InputArray input, int num_iterations = 4);
+    virtual std::vector<double> iterateSpectral(InputArray input, int num_iterations = 4);
     inline void sortNIndexed(const float* feature, int* idx);
     typedef unsigned int BinaryCodebook;
     inline void quantizeFeature(const float* feature, BinaryCodebook* feature_binary);
@@ -107,7 +107,7 @@ public:
 
     virtual int getNumberOfSuperpixels() { return nrLabels(seeds_top_level); }
 
-    virtual void iterate(InputArray img, int num_iterations = 4);
+    virtual std::vector<double> iterate(InputArray img, int num_iterations = 4);
 
 
     virtual void getLabels(OutputArray labels_out);
@@ -333,9 +333,15 @@ SuperpixelSEEDSImpl::~SuperpixelSEEDSImpl()
 }
 
 
-void SuperpixelSEEDSImpl::iterate(InputArray img, int num_iterations)
+std::vector<double> SuperpixelSEEDSImpl::iterate(InputArray img, int num_iterations)
 {
+    vector<double> ret;
+    double t = (double) getTickCount();
     initImage(img);
+
+    t = ((double) getTickCount() - t) / getTickFrequency();
+    ret.push_back(t);
+    t = (double) getTickCount();
 
     // block updates
     while (seeds_current_level >= 0)
@@ -350,6 +356,10 @@ void SuperpixelSEEDSImpl::iterate(InputArray img, int num_iterations)
 
     for (int i = 0; i < num_iterations; ++i)
         updatePixels();
+
+    t = ((double) getTickCount() - t) / getTickFrequency();
+    ret.push_back(t);
+    return ret;
 }
 void SuperpixelSEEDSImpl::getLabels(OutputArray labels_out)
 {
@@ -492,7 +502,10 @@ void SuperpixelSEEDSImpl::initImageBins<float>(const Mat& img, int)
 
 void SuperpixelSEEDSImpl::initImage(InputArray img)
 {
-    Mat src = img.getMat();
+    Mat src_tmp = img.getMat();
+    Mat src;
+    cvtColor(src_tmp, src, COLOR_BGR2Lab);
+
     int depth = src.depth();
     seeds_current_level = seeds_nr_levels - 2;
     forwardbackward = true;
@@ -1707,10 +1720,12 @@ void SuperpixelSEEDSImpl::assignBinsSpectral(InputArray input)
     delete[] (feature);
 }
 
-void SuperpixelSEEDSImpl::iterateSpectral(InputArray input, int num_iterations)
+vector<double> SuperpixelSEEDSImpl::iterateSpectral(InputArray input, int num_iterations)
 {
+    vector<double> ret;
     CV_Assert(spec_codebook_exists);
 
+    double t = (double) getTickCount();
     seeds_current_level = seeds_nr_levels - 2;
     forwardbackward = true;
 
@@ -1720,6 +1735,10 @@ void SuperpixelSEEDSImpl::iterateSpectral(InputArray input, int num_iterations)
 
     //TODO: duplicate code from SEEDS::iterate...
     computeHistograms();
+
+    t = ((double) getTickCount() - t) / getTickFrequency();
+    ret.push_back(t);
+    t = (double) getTickCount();
 
     // block updates
     while (seeds_current_level >= 0)
@@ -1734,6 +1753,10 @@ void SuperpixelSEEDSImpl::iterateSpectral(InputArray input, int num_iterations)
 
     for (int i = 0; i < num_iterations; ++i)
         updatePixels();
+
+    t = ((double) getTickCount() - t) / getTickFrequency();
+    ret.push_back(t);
+    return ret;
 }
 
 int SuperpixelSEEDSImpl::popcount(unsigned int v)

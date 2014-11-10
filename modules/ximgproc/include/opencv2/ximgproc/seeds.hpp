@@ -67,7 +67,7 @@ public:
      * @param num_iterations number of pixel level iterations. higher number
      *                       improves the result
      */
-    CV_WRAP virtual void iterate(InputArray img, int num_iterations=4) = 0;
+    CV_WRAP virtual std::vector<double> iterate(InputArray img, int num_iterations=4) = 0;
 
     /*!
      * retrieve the segmentation results.
@@ -119,7 +119,7 @@ public:
      * @param num_iterations  number of SEEDS pixel level iterations
      *
      */
-    CV_WRAP virtual void iterateSpectral(InputArray input, int num_iterations = 4) = 0;
+    CV_WRAP virtual std::vector<double> iterateSpectral(InputArray input, int num_iterations = 4) = 0;
 };
 
 /*! Creates a SuperpixelSEEDS object.
