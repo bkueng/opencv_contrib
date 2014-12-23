@@ -98,6 +98,9 @@ public:
      */
     CV_WRAP virtual void iterate(InputArray img, int num_iterations=4) = 0;
 
+    CV_WRAP virtual std::vector<int> iterateVideo(InputArray img, int num_iterations=4,
+            int restore_level = 1) = 0;
+
     /** @brief Returns the segmentation labeling of the image.
 
     Each label represents a superpixel, and each pixel is assigned to one superpixel label.
