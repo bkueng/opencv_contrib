@@ -84,6 +84,7 @@ int main(int argc, char** argv)
     Ptr<SuperpixelSEEDS> seeds;
     int width, height;
     int display_mode = 0;
+    Mat rand_colors;
 
     for (;;)
     {
@@ -103,6 +104,17 @@ int main(int argc, char** argv)
             seeds = createSuperpixelSEEDS(width, height, frame.channels(), num_superpixels,
                     num_levels, prior, num_histogram_bins, double_step);
             init = true;
+
+            //random colored output
+            RNG rng(12345);
+            int num_colors = seeds->getNumberOfSuperpixels();
+            rand_colors = Mat(num_colors, 1, CV_8UC3);
+            for (int i = 0; i < num_colors; ++i)
+            {
+                rand_colors.at<Vec3b>(0, i) = Vec3b(rng.uniform(0, 255),
+                        rng.uniform(150, 230), rng.uniform(180, 255));
+            }
+            cvtColor(rand_colors, rand_colors, COLOR_HSV2BGR);
         }
         Mat converted;
         cvtColor(frame, converted, COLOR_BGR2HSV);
@@ -135,12 +147,12 @@ int main(int argc, char** argv)
             break;
         case 2: //labels array
         {
-            // use the last x bit to determine the color. Note that this does not
-            // guarantee that 2 neighboring superpixels have different colors.
-            const int num_label_bits = 2;
-            labels &= (1 << num_label_bits) - 1;
-            labels *= 1 << (16 - num_label_bits);
-            imshow(window_name, labels);
+            for (int y=0; y<height; ++y) {
+                for(int x=0; x<width; ++x) {
+                    result.at<Vec3b>(y, x) = rand_colors.at<Vec3b>(0, labels.at<int>(y, x));
+                }
+            }
+            imshow(window_name, result);
         }
             break;
         }
