@@ -229,7 +229,9 @@ SuperpixelSEEDSImpl::~SuperpixelSEEDSImpl()
 
 void SuperpixelSEEDSImpl::iterate(InputArray img, int num_iterations)
 {
+    assignLabels();
     initImage(img);
+    computeHistograms();
 
     // block updates
     while (seeds_current_level >= 0)
@@ -394,8 +396,6 @@ void SuperpixelSEEDSImpl::initImage(InputArray img)
     seeds_current_level = seeds_nr_levels - 2;
     forwardbackward = true;
 
-    assignLabels();
-
     CV_Assert(src.size().width == width && src.size().height == height);
     CV_Assert(depth == CV_8U || depth == CV_16U || depth == CV_32F);
     CV_Assert(src.channels() == nr_channels);
@@ -413,8 +413,6 @@ void SuperpixelSEEDSImpl::initImage(InputArray img)
         initImageBins<float>(src, 1);
         break;
     }
-
-    computeHistograms();
 }
 
 // adds labeling to all the blocks at all levels and sets the correct parents
@@ -475,69 +473,25 @@ vector<int> SuperpixelSEEDSImpl::iterateVideo(InputArray img, int num_iterations
         return ret;
     }
 
-    Mat src = img.getMat();
-    int depth = src.depth();
-    seeds_current_level = restore_level;
-    forwardbackward = true;
-
-    //TODO: add block prior??
-
-    //assignLabels();
+    //assign labels
     memset(nr_partitions, 0, sizeof(int) * nrLabels(seeds_top_level));
-
     for (int level = 1; level <= restore_level; level++)
     {
         memcpy(parent[level - 1], parent_pre_init[level - 1],
                 sizeof(int) * nrLabels(level - 1));
     }
+    initImage(img);
 
-    CV_Assert(src.size().width == width && src.size().height == height);
-    CV_Assert(depth == CV_8U || depth == CV_16U || depth == CV_32F);
-    CV_Assert(src.channels() == nr_channels);
-
-    // initialize the histogram bins from the image
-    switch (depth)
-    {
-    case CV_8U:
-        initImageBins<uchar>(src, 1 << 8);
-        break;
-    case CV_16U:
-        initImageBins<ushort>(src, 1 << 16);
-        break;
-    case CV_32F:
-        initImageBins<float>(src, 1);
-        break;
-    }
-
-    //computeHistograms();
-    // clear histograms
-    for (int level = 0; level < seeds_nr_levels; level++)
-    {
-        int nr_labels = nrLabels(level);
-        memset(histogram[level], 0, sizeof(HISTN) * histogram_size_aligned * nr_labels);
-        memset(T[level], 0, sizeof(HISTN) * nr_labels);
-    }
-
-    // build histograms on the first level by adding the pixels to the blocks
-    for (int i = 0; i < width * height; ++i)
-        addPixel(0, labels_bottom[i], i);
-
-    int until_level = restore_level + 1;
-    // build histograms on the upper levels by adding the histogram from the level below
-    for (int level = 1; level < until_level; level++)
-    {
-        for (int label = 0; label < nrLabels(level - 1); label++)
-        {
-            addBlock(level, parent[level - 1][label], level - 1, label);
-        }
-    }
+    seeds_current_level = restore_level;
+    computeHistograms(restore_level);
     //build top_level histogram using previous segmentation of the restore_level.
-    //we ignore the levels between restore_level and top_level, because they are
+    //we can ignore the levels between restore_level and top_level, they are
     //not used
     for (int label = 0; label < nrLabels(restore_level); label++)
     {
         addBlockToplevel(parent[restore_level][label], restore_level, label);
     }
+
 
     // block updates
     if( seeds_double_step )
