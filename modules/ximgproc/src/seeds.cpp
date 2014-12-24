@@ -185,6 +185,13 @@ private:
     vector<Mat> T_mat;
     vector<Mat> parent_mat;
     vector<Mat> parent_pre_init_mat;
+
+    enum SEEDS_State {
+        State_nodata = 0,
+        State_normal_iteration,
+        State_video_iteration
+    };
+    SEEDS_State state;
 };
 
 CV_EXPORTS Ptr<SuperpixelSEEDS> createSuperpixelSEEDS(int image_width, int image_height,
@@ -204,6 +211,7 @@ SuperpixelSEEDSImpl::SuperpixelSEEDSImpl(int image_width, int image_height, int 
     nr_channels = image_channels;
     seeds_double_step = double_step;
     seeds_prior = std::min(prior, 5);
+    state = State_nodata;
 
     histogram_size = nr_bins;
     for (int i = 1; i < nr_channels; ++i)
@@ -236,6 +244,8 @@ void SuperpixelSEEDSImpl::iterate(InputArray img, int num_iterations)
 
     for (int i = 0; i < num_iterations; ++i)
         updatePixels();
+
+    state = State_normal_iteration;
 }
 
 void SuperpixelSEEDSImpl::getLabels(OutputArray labels_out)
@@ -457,6 +467,14 @@ vector<int> SuperpixelSEEDSImpl::iterateVideo(InputArray img, int num_iterations
     if (restore_level < 0) restore_level = 0;
     else if (restore_level > seeds_nr_levels - 2) restore_level = seeds_nr_levels - 2;
 
+    if (state == State_nodata)
+    {
+        //for video iteration we need valid previous data, which is provided by
+        //a normal iteration
+        iterate(img, num_iterations);
+        return ret;
+    }
+
     Mat src = img.getMat();
     int depth = src.depth();
     seeds_current_level = restore_level;
@@ -541,6 +559,7 @@ vector<int> SuperpixelSEEDSImpl::iterateVideo(InputArray img, int num_iterations
     for (int i = 0; i < num_iterations; ++i)
         updatePixels();
 
+    state = State_video_iteration;
     //TODO: fill ret with replaced labels
     return ret;
 }
