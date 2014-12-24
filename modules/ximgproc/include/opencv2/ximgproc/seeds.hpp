@@ -99,7 +99,7 @@ public:
     CV_WRAP virtual void iterate(InputArray img, int num_iterations=4) = 0;
 
     CV_WRAP virtual std::vector<int> iterateVideo(InputArray img, int num_iterations=4,
-            int restore_level = 1) = 0;
+            int restore_level = 1, float max_splitting_rate = 0.2) = 0;
 
     /** @brief Returns the segmentation labeling of the image.
 

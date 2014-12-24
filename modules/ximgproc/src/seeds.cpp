@@ -84,7 +84,7 @@ public:
     virtual void iterate(InputArray img, int num_iterations = 4);
 
     virtual vector<int> iterateVideo(InputArray img, int num_iterations = 4,
-            int restore_level = 1);
+            int restore_level = 1, float max_splitting_rate = 0.2);
 
 
     virtual void getLabels(OutputArray labels_out);
@@ -122,6 +122,8 @@ private:
     // intersection on label1A and intersection_delete on label1B
     // returns intA - intB
     float intersectConf(int level1, int label1A, int label1B, int level2, int label2);
+    //single intersection
+    float intersection(int level1, int label1, int level2, int label2);
 
     //main loop for block updates
     void updateBlocks(int level, float req_confidence = 0.0f);
@@ -134,6 +136,9 @@ private:
     inline bool checkSplit_hb(int a12, int a13, int a22, int a23, int a32, int a33);
     inline bool checkSplit_vf(int a11, int a12, int a13, int a21, int a22, int a23);
     inline bool checkSplit_vb(int a21, int a22, int a23, int a31, int a32, int a33);
+
+    /* video SEEDS */
+    void mergeAndSplitLabels(int level, float max_splitting_rate, vector<int>& output_labels);
 
 
     //compute initial label for sublevels: level <= seeds_top_level
@@ -192,6 +197,7 @@ private:
         State_video_iteration
     };
     SEEDS_State state;
+    float video_splitting_accumulator;
 };
 
 CV_EXPORTS Ptr<SuperpixelSEEDS> createSuperpixelSEEDS(int image_width, int image_height,
@@ -211,6 +217,7 @@ SuperpixelSEEDSImpl::SuperpixelSEEDSImpl(int image_width, int image_height, int 
     nr_channels = image_channels;
     seeds_double_step = double_step;
     seeds_prior = std::min(prior, 5);
+    video_splitting_accumulator = 0.;
     state = State_nodata;
 
     histogram_size = nr_bins;
@@ -248,6 +255,7 @@ void SuperpixelSEEDSImpl::iterate(InputArray img, int num_iterations)
         updatePixels();
 
     state = State_normal_iteration;
+    video_splitting_accumulator = 0.;
 }
 
 void SuperpixelSEEDSImpl::getLabels(OutputArray labels_out)
@@ -459,7 +467,8 @@ void SuperpixelSEEDSImpl::computeHistograms(int until_level)
     }
 }
 
-vector<int> SuperpixelSEEDSImpl::iterateVideo(InputArray img, int num_iterations, int restore_level)
+vector<int> SuperpixelSEEDSImpl::iterateVideo(InputArray img, int num_iterations,
+        int restore_level, float max_splitting_rate)
 {
     vector<int> ret;
     if (restore_level < 0) restore_level = 0;
@@ -494,11 +503,11 @@ vector<int> SuperpixelSEEDSImpl::iterateVideo(InputArray img, int num_iterations
 
 
     // block updates
-    if( seeds_double_step )
-        updateBlocks(seeds_current_level, REQ_CONF);
+    //we always use double step for this level for faster temporal convergence
+    updateBlocks(seeds_current_level, REQ_CONF);
     updateBlocks(seeds_current_level);
+    mergeAndSplitLabels(seeds_current_level, max_splitting_rate, ret);
     seeds_current_level = goDownOneLevel();
-    //TODO: merge/split
 
     while (seeds_current_level >= 0)
     {
@@ -514,10 +523,152 @@ vector<int> SuperpixelSEEDSImpl::iterateVideo(InputArray img, int num_iterations
         updatePixels();
 
     state = State_video_iteration;
-    //TODO: fill ret with replaced labels
     return ret;
 }
 
+typedef std::pair<float, int> seeds_pair;
+typedef std::pair<int, int> seeds_target;
+bool comparator_lower ( const seeds_pair& l, const seeds_pair& r) {return l.first < r.first;}
+bool comparator_higher ( const seeds_pair& l, const seeds_pair& r) {return l.first > r.first;}
+#define MAXIMUM_INTERSECTION 0.5
+
+void SuperpixelSEEDSImpl::mergeAndSplitLabels(int level, float max_splitting_rate,
+        vector<int>& output_labels)
+{
+    int label, sublabel;
+    int labels_width = nr_wh[2 * level], labels_height = nr_wh[2 * level + 1];
+    int step = labels_width;
+    int nr_blocks = nrLabels(level);
+    vector<seeds_pair> existing_blocks;
+    int* target_labels = new int[nr_blocks];
+    vector<seeds_pair> potential_blocks;
+    vector<seeds_pair>::iterator it;
+    //TODO: better data structures...
+
+    video_splitting_accumulator += max_splitting_rate;
+    if (video_splitting_accumulator < 1.) return;
+
+    // calculate the intersection for each block with its superpixel
+    for (int y = 0; y < labels_height; y++)
+    {
+        for (int x = 0; x < labels_width; x++)
+        {
+            sublabel = y * step + x;
+            label = parent[level][sublabel];
+            if( nr_partitions[label] == 1 )
+            {
+                int target_label = -1;
+                float max_intersection = -1.0;
+                if( y > 0 )
+                {
+                    int tl = parent[level][(y - 1) * step + x];
+                    float ti = intersection(seeds_top_level, tl, level, sublabel);
+                    if( ti > max_intersection )
+                    {
+                        max_intersection = ti;
+                        target_label = tl;
+                    }
+                }
+                if( y < labels_height - 1 )
+                {
+                    int tl = parent[level][(y + 1) * step + x];
+                    float ti = intersection(seeds_top_level, tl, level, sublabel);
+                    if( ti > max_intersection )
+                    {
+                        max_intersection = ti;
+                        target_label = tl;
+                    }
+                }
+                if( x > 0 )
+                {
+                    int tl = parent[level][y * step + x - 1];
+                    float ti = intersection(seeds_top_level, tl, level, sublabel);
+                    if( ti > max_intersection )
+                    {
+                        max_intersection = ti;
+                        target_label = tl;
+                    }
+                }
+                if( x < labels_width - 1 )
+                {
+                    int tl = parent[level][y * step + x + 1];
+                    float ti = intersection(seeds_top_level, tl, level, sublabel);
+                    if( ti > max_intersection )
+                    {
+                        max_intersection = ti;
+                        target_label = tl;
+                    }
+                }
+                //TODO: dynamic threshold here in [0,1] ??
+                if( max_intersection > MAXIMUM_INTERSECTION )
+                {
+                    //need to store: max_intersection, sublabel, target_label
+                    existing_blocks.push_back(make_pair(max_intersection, sublabel));
+                    target_labels[sublabel] = target_label;
+                }
+            }
+            else
+            {
+                //nr_partitions[label] > 1 must hold. otherwise something is
+                //seriously wrong with the algorithm...
+                CV_DbgAssert(nr_partitions[label] > 1);
+
+                //make sure at least one neighbor has a different label
+                if( (y > 0 && parent[level][(y - 1) * step + x] != label)
+                    || (y < labels_height - 1 && parent[level][(y + 1) * step + x] != label)
+                    || (x > 0 && parent[level][y * step + x - 1] != label)
+                    || (x < labels_width - 1 && parent[level][y * step + x + 1] != label))
+                {
+                    float intersect = intersection(seeds_top_level, label, level, sublabel);
+                    potential_blocks.push_back(make_pair(intersect, sublabel));
+                }
+            }
+        }
+    }
+
+    std::sort(existing_blocks.begin(), existing_blocks.end(), comparator_higher);
+    std::sort(potential_blocks.begin(), potential_blocks.end(), comparator_lower);
+
+    int i = 0;
+    while (i < (int)existing_blocks.size() && video_splitting_accumulator >= 1.)
+    {
+        it = existing_blocks.end() - i - 1;
+        float existing_intersection = it->first;
+        int existing_sublabel = it->second;
+        int existing_target = target_labels[existing_sublabel];
+        int existing_label = parent[level][existing_sublabel];
+        it = potential_blocks.begin() + i;
+        float potential_intersection = it->first;
+        int potential_sublabel = it->second;
+        int potential_label = parent[level][potential_sublabel];
+
+        if( potential_intersection < existing_intersection )
+        {
+            if( nr_partitions[existing_label] == 1 )
+            {
+                //TODO: make sure it does not split (separate)
+
+                // move existing block to its target
+                deleteBlockToplevel(existing_label, level, existing_sublabel);
+                addBlockToplevel(existing_target, level, existing_sublabel);
+                CV_DbgAssert(nr_partitions[existing_label] == 0);
+
+                //we now have a free label and use it to split an existing one
+                deleteBlockToplevel(potential_label, level, potential_sublabel);
+                addBlockToplevel(existing_label, level, potential_sublabel);
+                CV_DbgAssert(nr_partitions[existing_label] == 1);
+
+                --video_splitting_accumulator;
+                output_labels.push_back(existing_label);
+            }
+            //else: this can happen if 2 neighbors have only 1 partition and
+            //try to merge into each other, where the first merge was already
+            //done. it is quite unlikely however
+        }
+        i++;
+    }
+    delete[] target_labels;
+}
 
 void SuperpixelSEEDSImpl::updateBlocks(int level, float req_confidence)
 {
@@ -1223,6 +1374,56 @@ float SuperpixelSEEDSImpl::intersectConf(int level1, int label1A, int label1B,
     float intA = sumA / (count1A * count2);
     float intB = sumB / (count1B * count2);
     return intA - intB;
+}
+
+float SuperpixelSEEDSImpl::intersection(int level1, int label1, int level2, int label2)
+{
+    //calculate normalized histogram intersection
+    float sum1 = 0, sum2=0;
+    float* h1 = &histogram[level1][label1 * histogram_size_aligned];
+    float* h2 = &histogram[level2][label2 * histogram_size_aligned];
+    const float count1 = T[level1][label1];
+    const float count2 = T[level2][label2];
+
+    int n = 0;
+#if CV_SSSE3
+    __m128 count1p = _mm_set1_ps(count1);
+    __m128 count2p = _mm_set1_ps(count2);
+    __m128 sum1p = _mm_set1_ps(0.0f);
+    __m128 sum2p = _mm_set1_ps(0.0f);
+
+    const int loop_end = histogram_size - 3;
+    for(; n < loop_end; n += 4) {
+        __m128 h1p = _mm_load_ps(&h1[0] + n);
+        __m128 h2p = _mm_load_ps(&h2[0] + n);
+        __m128 h1pC2 = _mm_mul_ps(h1p, count2p);
+        __m128 h2pC1 = _mm_mul_ps(h2p, count1p);
+        __m128 mask = _mm_cmple_ps(h1pC2, h2pC1);
+        __m128 sum1Add = _mm_and_ps(mask, h1p);
+        __m128 sum2Add = _mm_andnot_ps(mask, h2p);
+        sum1p = _mm_add_ps(sum1p, sum1Add);
+        sum2p = _mm_add_ps(sum2p, sum2Add);
+    }
+    // merge results (quite expensive)
+    float sum1sse, sum2sse;
+    sum1p = _mm_hadd_ps(sum1p, sum1p);
+    sum1p = _mm_hadd_ps(sum1p, sum1p);
+    _mm_store_ss(&sum1sse, sum1p);
+    sum2p = _mm_hadd_ps(sum2p, sum2p);
+    sum2p = _mm_hadd_ps(sum2p, sum2p);
+    _mm_store_ss(&sum2sse, sum2p);
+    sum1 += sum1sse;
+    sum2 += sum2sse;
+#endif
+
+    //loop peeling
+    for (; n<histogram_size; n++)
+    {
+        if(h1[n] * count2 < h2[n] * count1) sum1+=h1[n];
+        else sum2+=h2[n];
+    }
+
+    return sum1/count1 + sum2/count2;
 }
 
 bool SuperpixelSEEDSImpl::checkSplit_hf(int a11, int a12, int a21, int a22, int a31, int a32)
