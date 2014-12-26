@@ -44,9 +44,17 @@ int main(int argc, char** argv)
     bool use_video_capture = false;
     help();
 
-    if( argc == 1 || (argc == 2 && strlen(argv[1]) == 1 && isdigit(argv[1][0])) )
+    if( argc == 2 )
     {
-        cap.open(argc == 2 ? argv[1][0] - '0' : 0);
+        if( strlen(argv[1]) == 1 && isdigit(argv[1][0]) )
+            cap.open(argv[1][0] - '0'); //video capture
+        else
+            cap.open(argv[1]); //video file
+        use_video_capture = true;
+    }
+    else if( argc == 1 )
+    {
+        cap.open(0);
         use_video_capture = true;
     }
     else if( argc >= 2 )
@@ -69,16 +77,18 @@ int main(int argc, char** argv)
     }
 
     namedWindow(window_name, 0);
-    int num_iterations = 4;
+    int num_iterations = 0;
     int prior = 2;
-    bool double_step = false;
+    bool double_step = true;
     int num_superpixels = 400;
     int num_levels = 4;
     int num_histogram_bins = 5;
+    int restore_level = 0;
     createTrackbar("Number of Superpixels", window_name, &num_superpixels, 1000, trackbarChanged);
     createTrackbar("Smoothing Prior", window_name, &prior, 5, trackbarChanged);
     createTrackbar("Number of Levels", window_name, &num_levels, 10, trackbarChanged);
     createTrackbar("Iterations", window_name, &num_iterations, 12, 0);
+    createTrackbar("Video Restore Level", window_name, &restore_level, 8, 0);
 
     Mat result, mask;
     Ptr<SuperpixelSEEDS> seeds;
@@ -120,8 +130,14 @@ int main(int argc, char** argv)
         cvtColor(frame, converted, COLOR_BGR2HSV);
 
         double t = (double) getTickCount();
-
-        seeds->iterate(converted, num_iterations);
+        vector<int> ret;
+        //seeds->iterate(converted, num_iterations);
+        //*
+        ret = seeds->iterateVideo(converted, num_iterations, restore_level, 1);
+        for (int i=0; i<ret.size(); ++i) {
+            printf("split/merged label: %i\n", ret[i]);
+        }
+        //*/
         result = frame;
 
         t = ((double) getTickCount() - t) / getTickFrequency();
