@@ -91,6 +91,11 @@ public:
     virtual void getLabelContourMask(OutputArray image, bool thick_line = false);
 
 private:
+    enum Direction {
+        Dir_horizonal = 0,
+        Dir_vertical
+    };
+
     /* initialization */
     void initialize(int num_superpixels, int num_levels);
     void initImage(InputArray img);
@@ -106,8 +111,6 @@ private:
     inline void addPixel(int level, int label, int image_idx);
     inline void deletePixel(int level, int label, int image_idx);
     inline bool probability(int image_idx, int label1, int label2, int prior1, int prior2);
-    inline int threebyfour(int x, int y, int label);
-    inline int fourbythree(int x, int y, int label);
 
     inline void updateLabels();
     // main loop for pixel updating
@@ -136,6 +139,9 @@ private:
     inline bool checkSplit_hb(int a12, int a13, int a22, int a23, int a32, int a33);
     inline bool checkSplit_vf(int a11, int a12, int a13, int a21, int a22, int a23);
     inline bool checkSplit_vb(int a21, int a22, int a23, int a31, int a32, int a33);
+
+    template <Direction direction>
+    inline int countNeighborLabels(int* label_data, int step, int x, int y, int label);
 
     /* video SEEDS */
     void mergeAndSplitLabels(int level, float max_splitting_rate, vector<int>& output_labels);
@@ -670,6 +676,117 @@ void SuperpixelSEEDSImpl::mergeAndSplitLabels(int level, float max_splitting_rat
     delete[] target_labels;
 }
 
+template<>
+int SuperpixelSEEDSImpl::countNeighborLabels<SuperpixelSEEDSImpl::Dir_horizonal>
+    (int* label_data, int step, int x, int y, int label)
+{
+    /* count how many pixels in a neighborhood of (x,y) have the label 'label'.
+     * neighborhood (x=counted, o,O=ignored, O=(x,y)):
+     * x x x x
+     * x O o x
+     * x x x x
+     */
+
+#if CV_SSSE3
+    __m128i addp = _mm_set1_epi32(1);
+    __m128i addp_middle = _mm_set_epi32(1, 0, 0, 1);
+    __m128i labelp = _mm_set1_epi32(label);
+    /* 1. row */
+    __m128i data1 = _mm_loadu_si128((__m128i*) (label_data + (y-1)*step + x -1));
+    __m128i mask1 = _mm_cmpeq_epi32(data1, labelp);
+    __m128i countp = _mm_and_si128(mask1, addp);
+    /* 2. row */
+    __m128i data2 = _mm_loadu_si128((__m128i*) (label_data + y*step + x -1));
+    __m128i mask2 = _mm_cmpeq_epi32(data2, labelp);
+    __m128i count1 = _mm_and_si128(mask2, addp_middle);
+    countp = _mm_add_epi32(countp, count1);
+    /* 3. row */
+    __m128i data3 = _mm_loadu_si128((__m128i*) (label_data + (y+1)*step + x -1));
+    __m128i mask3 = _mm_cmpeq_epi32(data3, labelp);
+    __m128i count3 = _mm_and_si128(mask3, addp);
+    countp = _mm_add_epi32(count3, countp);
+
+    countp = _mm_hadd_epi32(countp, countp);
+    countp = _mm_hadd_epi32(countp, countp);
+    return _mm_cvtsi128_si32(countp);
+#else
+    int count = 0;
+    count += (label_data[(y - 1) * step + x - 1] == label);
+    count += (label_data[(y - 1) * step + x] == label);
+    count += (label_data[(y - 1) * step + x + 1] == label);
+    count += (label_data[(y - 1) * step + x + 2] == label);
+
+    count += (label_data[y * step + x - 1] == label);
+    count += (label_data[y * step + x + 2] == label);
+
+    count += (label_data[(y + 1) * step + x - 1] == label);
+    count += (label_data[(y + 1) * step + x] == label);
+    count += (label_data[(y + 1) * step + x + 1] == label);
+    count += (label_data[(y + 1) * step + x + 2] == label);
+
+    return count;
+#endif
+}
+
+template<>
+int SuperpixelSEEDSImpl::countNeighborLabels<SuperpixelSEEDSImpl::Dir_vertical>
+    (int* label_data, int step, int x, int y, int label)
+{
+    /* count how many pixels in a neighborhood of (x,y) have the label 'label'.
+     * neighborhood (x=counted, o,O=ignored, O=(x,y)):
+     * x x x o
+     * x O o x
+     * x o o x
+     * x x x o
+     */
+
+#if CV_SSSE3
+    __m128i addp_border = _mm_set_epi32(0, 1, 1, 1);
+    __m128i addp_middle = _mm_set_epi32(1, 0, 0, 1);
+    __m128i labelp = _mm_set1_epi32(label);
+    /* 1. row */
+    __m128i data1 = _mm_loadu_si128((__m128i*) (label_data + (y-1)*step + x -1));
+    __m128i mask1 = _mm_cmpeq_epi32(data1, labelp);
+    __m128i countp = _mm_and_si128(mask1, addp_border);
+    /* 2. row */
+    __m128i data2 = _mm_loadu_si128((__m128i*) (label_data + y*step + x -1));
+    __m128i mask2 = _mm_cmpeq_epi32(data2, labelp);
+    __m128i count1 = _mm_and_si128(mask2, addp_middle);
+    countp = _mm_add_epi32(countp, count1);
+    /* 3. row */
+    __m128i data3 = _mm_loadu_si128((__m128i*) (label_data + (y+1)*step + x -1));
+    __m128i mask3 = _mm_cmpeq_epi32(data3, labelp);
+    __m128i count3 = _mm_and_si128(mask3, addp_middle);
+    countp = _mm_add_epi32(count3, countp);
+    /* 4. row */
+    __m128i data4 = _mm_loadu_si128((__m128i*) (label_data + (y+2)*step + x -1));
+    __m128i mask4 = _mm_cmpeq_epi32(data4, labelp);
+    __m128i count4 = _mm_and_si128(mask4, addp_border);
+    countp = _mm_add_epi32(countp, count4);
+
+    countp = _mm_hadd_epi32(countp, countp);
+    countp = _mm_hadd_epi32(countp, countp);
+    return _mm_cvtsi128_si32(countp);
+#else
+    int count = 0;
+    count += (label_data[(y - 1) * step + x - 1] == label);
+    count += (label_data[(y - 1) * step + x] == label);
+    count += (label_data[(y - 1) * step + x + 1] == label);
+
+    count += (label_data[y * step + x - 1] == label);
+    count += (label_data[y * step + x + 2] == label);
+
+    count += (label_data[(y + 1) * step + x - 1] == label);
+    count += (label_data[(y + 1) * step + x + 2] == label);
+
+    count += (label_data[(y + 2) * step + x - 1] == label);
+    count += (label_data[(y + 2) * step + x] == label);
+    count += (label_data[(y + 2) * step + x + 1] == label);
+
+    return count;
+#endif
+}
+
 void SuperpixelSEEDSImpl::updateBlocks(int level, float req_confidence)
 {
     int labelA;
@@ -865,8 +982,8 @@ void SuperpixelSEEDSImpl::updatePixels()
                     {
                         if( seeds_prior )
                         {
-                            priorA = threebyfour(x, y, labelA);
-                            priorB = threebyfour(x, y, labelB);
+                            priorA = countNeighborLabels<Dir_horizonal>(labels, width, x, y, labelA);
+                            priorB = countNeighborLabels<Dir_horizonal>(labels, width, x, y, labelB);
                         }
 
                         if( probability(y * width + x, labelA, labelB, priorA, priorB) )
@@ -903,8 +1020,8 @@ void SuperpixelSEEDSImpl::updatePixels()
                     {
                         if( seeds_prior )
                         {
-                            priorA = threebyfour(x, y, labelA);
-                            priorB = threebyfour(x, y, labelB);
+                            priorA = countNeighborLabels<Dir_horizonal>(labels, width, x, y, labelA);
+                            priorB = countNeighborLabels<Dir_horizonal>(labels, width, x, y, labelB);
                         }
 
                         if( probability(y * width + x + 1, labelB, labelA, priorB, priorA) )
@@ -957,8 +1074,8 @@ void SuperpixelSEEDSImpl::updatePixels()
                     {
                         if( seeds_prior )
                         {
-                            priorA = fourbythree(x, y, labelA);
-                            priorB = fourbythree(x, y, labelB);
+                            priorA = countNeighborLabels<Dir_vertical>(labels, width, x, y, labelA);
+                            priorB = countNeighborLabels<Dir_vertical>(labels, width, x, y, labelB);
                         }
 
                         if( probability(y * width + x, labelA, labelB, priorA, priorB) )
@@ -995,8 +1112,8 @@ void SuperpixelSEEDSImpl::updatePixels()
                     {
                         if( seeds_prior )
                         {
-                            priorA = fourbythree(x, y, labelA);
-                            priorB = fourbythree(x, y, labelB);
+                            priorA = countNeighborLabels<Dir_vertical>(labels, width, x, y, labelA);
+                            priorB = countNeighborLabels<Dir_vertical>(labels, width, x, y, labelB);
                         }
 
                         if( probability((y + 1) * width + x, labelB, labelA, priorB, priorA) )
@@ -1176,113 +1293,6 @@ bool SuperpixelSEEDSImpl::probability(int image_idx, int label1, int label2,
     }
 
     return (P_label2 > P_label1);
-}
-
-int SuperpixelSEEDSImpl::threebyfour(int x, int y, int label)
-{
-    /* count how many pixels in a neighborhood of (x,y) have the label 'label'.
-     * neighborhood (x=counted, o,O=ignored, O=(x,y)):
-     * x x x x
-     * x O o x
-     * x x x x
-     */
-
-#if CV_SSSE3
-    __m128i addp = _mm_set1_epi32(1);
-    __m128i addp_middle = _mm_set_epi32(1, 0, 0, 1);
-    __m128i labelp = _mm_set1_epi32(label);
-    /* 1. row */
-    __m128i data1 = _mm_loadu_si128((__m128i*) (labels + (y-1)*width + x -1));
-    __m128i mask1 = _mm_cmpeq_epi32(data1, labelp);
-    __m128i countp = _mm_and_si128(mask1, addp);
-    /* 2. row */
-    __m128i data2 = _mm_loadu_si128((__m128i*) (labels + y*width + x -1));
-    __m128i mask2 = _mm_cmpeq_epi32(data2, labelp);
-    __m128i count1 = _mm_and_si128(mask2, addp_middle);
-    countp = _mm_add_epi32(countp, count1);
-    /* 3. row */
-    __m128i data3 = _mm_loadu_si128((__m128i*) (labels + (y+1)*width + x -1));
-    __m128i mask3 = _mm_cmpeq_epi32(data3, labelp);
-    __m128i count3 = _mm_and_si128(mask3, addp);
-    countp = _mm_add_epi32(count3, countp);
-
-    countp = _mm_hadd_epi32(countp, countp);
-    countp = _mm_hadd_epi32(countp, countp);
-    return _mm_cvtsi128_si32(countp);
-#else
-    int count = 0;
-    count += (labels[(y - 1) * width + x - 1] == label);
-    count += (labels[(y - 1) * width + x] == label);
-    count += (labels[(y - 1) * width + x + 1] == label);
-    count += (labels[(y - 1) * width + x + 2] == label);
-
-    count += (labels[y * width + x - 1] == label);
-    count += (labels[y * width + x + 2] == label);
-
-    count += (labels[(y + 1) * width + x - 1] == label);
-    count += (labels[(y + 1) * width + x] == label);
-    count += (labels[(y + 1) * width + x + 1] == label);
-    count += (labels[(y + 1) * width + x + 2] == label);
-
-    return count;
-#endif
-}
-
-int SuperpixelSEEDSImpl::fourbythree(int x, int y, int label)
-{
-    /* count how many pixels in a neighborhood of (x,y) have the label 'label'.
-     * neighborhood (x=counted, o,O=ignored, O=(x,y)):
-     * x x x o
-     * x O o x
-     * x o o x
-     * x x x o
-     */
-
-#if CV_SSSE3
-    __m128i addp_border = _mm_set_epi32(0, 1, 1, 1);
-    __m128i addp_middle = _mm_set_epi32(1, 0, 0, 1);
-    __m128i labelp = _mm_set1_epi32(label);
-    /* 1. row */
-    __m128i data1 = _mm_loadu_si128((__m128i*) (labels + (y-1)*width + x -1));
-    __m128i mask1 = _mm_cmpeq_epi32(data1, labelp);
-    __m128i countp = _mm_and_si128(mask1, addp_border);
-    /* 2. row */
-    __m128i data2 = _mm_loadu_si128((__m128i*) (labels + y*width + x -1));
-    __m128i mask2 = _mm_cmpeq_epi32(data2, labelp);
-    __m128i count1 = _mm_and_si128(mask2, addp_middle);
-    countp = _mm_add_epi32(countp, count1);
-    /* 3. row */
-    __m128i data3 = _mm_loadu_si128((__m128i*) (labels + (y+1)*width + x -1));
-    __m128i mask3 = _mm_cmpeq_epi32(data3, labelp);
-    __m128i count3 = _mm_and_si128(mask3, addp_middle);
-    countp = _mm_add_epi32(count3, countp);
-    /* 4. row */
-    __m128i data4 = _mm_loadu_si128((__m128i*) (labels + (y+2)*width + x -1));
-    __m128i mask4 = _mm_cmpeq_epi32(data4, labelp);
-    __m128i count4 = _mm_and_si128(mask4, addp_border);
-    countp = _mm_add_epi32(countp, count4);
-
-    countp = _mm_hadd_epi32(countp, countp);
-    countp = _mm_hadd_epi32(countp, countp);
-    return _mm_cvtsi128_si32(countp);
-#else
-    int count = 0;
-    count += (labels[(y - 1) * width + x - 1] == label);
-    count += (labels[(y - 1) * width + x] == label);
-    count += (labels[(y - 1) * width + x + 1] == label);
-
-    count += (labels[y * width + x - 1] == label);
-    count += (labels[y * width + x + 2] == label);
-
-    count += (labels[(y + 1) * width + x - 1] == label);
-    count += (labels[(y + 1) * width + x + 2] == label);
-
-    count += (labels[(y + 2) * width + x - 1] == label);
-    count += (labels[(y + 2) * width + x] == label);
-    count += (labels[(y + 2) * width + x + 1] == label);
-
-    return count;
-#endif
 }
 
 float SuperpixelSEEDSImpl::intersectConf(int level1, int label1A, int label1B,
