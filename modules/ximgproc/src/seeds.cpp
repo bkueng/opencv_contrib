@@ -121,15 +121,17 @@ private:
     void addBlock(int level, int label, int sublevel, int sublabel);
     inline void addBlockToplevel(int label, int sublevel, int sublabel);
     void deleteBlockToplevel(int label, int sublevel, int sublabel);
+    template <Direction direction>
+    inline float blockPrior(int block_prior, int level, int x, int y, int labelA, int labelB);
 
     // intersection on label1A and intersection_delete on label1B
     // returns intA - intB
-    float intersectConf(int level1, int label1A, int label1B, int level2, int label2);
+    float intersectConf(int level1, int label1A, int label1B, int level2, int label2, float prior);
     //single intersection
     float intersection(int level1, int label1, int level2, int label2);
 
     //main loop for block updates
-    void updateBlocks(int level, float req_confidence = 0.0f);
+    void updateBlocks(int level, float req_confidence = 0.0f, int block_prior = 0);
 
     /* go to next block level */
     int goDownOneLevel();
@@ -509,9 +511,10 @@ vector<int> SuperpixelSEEDSImpl::iterateVideo(InputArray img, int num_iterations
 
 
     // block updates
-    //we always use double step for this level for faster temporal convergence
-    updateBlocks(seeds_current_level, REQ_CONF);
-    updateBlocks(seeds_current_level);
+    //it is better to use double step here, for faster temporal convergence
+    if( seeds_double_step )
+        updateBlocks(seeds_current_level, REQ_CONF, seeds_prior);
+    updateBlocks(seeds_current_level, 0, seeds_prior);
     mergeAndSplitLabels(seeds_current_level, max_splitting_rate, ret);
     seeds_current_level = goDownOneLevel();
 
@@ -787,7 +790,7 @@ int SuperpixelSEEDSImpl::countNeighborLabels<SuperpixelSEEDSImpl::Dir_vertical>
 #endif
 }
 
-void SuperpixelSEEDSImpl::updateBlocks(int level, float req_confidence)
+void SuperpixelSEEDSImpl::updateBlocks(int level, float req_confidence, int block_prior)
 {
     int labelA;
     int labelB;
@@ -823,7 +826,8 @@ void SuperpixelSEEDSImpl::updateBlocks(int level, float req_confidence)
                     && checkSplit_hf(a11, a12, a21, a22, a31, a32)) )
             {
                 // run algorithm as usual
-                float conf = intersectConf(seeds_top_level, labelB, labelA, level, sublabel);
+                float prior = blockPrior<Dir_horizonal>(block_prior, level, x, y, labelB, labelA);
+                float conf = intersectConf(seeds_top_level, labelB, labelA, level, sublabel, prior);
                 if( conf > req_confidence )
                 {
                     deleteBlockToplevel(labelA, level, sublabel);
@@ -846,7 +850,8 @@ void SuperpixelSEEDSImpl::updateBlocks(int level, float req_confidence)
                         || (nr_partitions[labelB] > 2 && checkSplit_hb(a13, a14, a23, a24, a33, a34)) )
                 {
                     // run algorithm as usual
-                    float conf = intersectConf(seeds_top_level, labelA, labelB, level, sublabel);
+                    float prior = blockPrior<Dir_horizonal>(block_prior, level, x, y, labelA, labelB);
+                    float conf = intersectConf(seeds_top_level, labelA, labelB, level, sublabel, prior);
                     if( conf > req_confidence )
                     {
                         deleteBlockToplevel(labelB, level, sublabel);
@@ -885,7 +890,8 @@ void SuperpixelSEEDSImpl::updateBlocks(int level, float req_confidence)
                     && checkSplit_vf(a11, a12, a13, a21, a22, a23)) )
             {
                 // run algorithm as usual
-                float conf = intersectConf(seeds_top_level, labelB, labelA, level, sublabel);
+                float prior = blockPrior<Dir_vertical>(block_prior, level, x, y, labelB, labelA);
+                float conf = intersectConf(seeds_top_level, labelB, labelA, level, sublabel, prior);
                 if( conf > req_confidence )
                 {
                     deleteBlockToplevel(labelA, level, sublabel);
@@ -908,7 +914,8 @@ void SuperpixelSEEDSImpl::updateBlocks(int level, float req_confidence)
                         || (nr_partitions[labelB] > 2 && checkSplit_vb(a31, a32, a33, a41, a42, a43)) )
                 {
                     // run algorithm as usual
-                    float conf = intersectConf(seeds_top_level, labelA, labelB, level, sublabel);
+                    float prior = blockPrior<Dir_vertical>(block_prior, level, x, y, labelA, labelB);
+                    float conf = intersectConf(seeds_top_level, labelA, labelB, level, sublabel, prior);
                     if( conf > req_confidence )
                     {
                         deleteBlockToplevel(labelB, level, sublabel);
@@ -919,6 +926,25 @@ void SuperpixelSEEDSImpl::updateBlocks(int level, float req_confidence)
             }
         }
     }
+}
+
+template <SuperpixelSEEDSImpl::Direction direction>
+float SuperpixelSEEDSImpl::blockPrior(int block_prior, int level, int x, int y, int labelA, int labelB)
+{
+    if( block_prior == 0 )
+        return 1;
+
+    //offset by 1 to avoid division by zero
+    float prior = (float)
+            (1 + countNeighborLabels<direction>(parent[level], nr_wh[2*level], x, y, labelA)) /
+            (1 + countNeighborLabels<direction>(parent[level], nr_wh[2*level], x, y, labelB));
+    if( block_prior == 1 )
+        return prior * sqrtf(T[seeds_top_level][labelB] / T[seeds_top_level][labelA]);
+
+    prior *= prior * T[seeds_top_level][labelB] / T[seeds_top_level][labelA];
+    for (int i = 2; i < block_prior; ++i)
+        prior *= prior;
+    return prior;
 }
 
 int SuperpixelSEEDSImpl::goDownOneLevel()
@@ -1296,7 +1322,7 @@ bool SuperpixelSEEDSImpl::probability(int image_idx, int label1, int label2,
 }
 
 float SuperpixelSEEDSImpl::intersectConf(int level1, int label1A, int label1B,
-        int level2, int label2)
+        int level2, int label2, float prior)
 {
     float sumA = 0, sumB = 0;
     float* h1A = &histogram[level1][label1A * histogram_size_aligned];
@@ -1381,7 +1407,7 @@ float SuperpixelSEEDSImpl::intersectConf(int level1, int label1A, int label1B,
         else sumB += h2[n] * count1B;
     }
 
-    float intA = sumA / (count1A * count2);
+    float intA = sumA / (count1A * count2) * prior;
     float intB = sumB / (count1B * count2);
     return intA - intB;
 }
