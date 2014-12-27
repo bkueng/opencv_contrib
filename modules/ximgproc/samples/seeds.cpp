@@ -118,7 +118,7 @@ int main(int argc, char** argv)
             //random colored output
             RNG rng(12345);
             int num_colors = seeds->getNumberOfSuperpixels();
-            rand_colors = Mat(num_colors, 1, CV_8UC3);
+            rand_colors = Mat(1, num_colors, CV_8UC3);
             for (int i = 0; i < num_colors; ++i)
             {
                 rand_colors.at<Vec3b>(0, i) = Vec3b(rng.uniform(0, 255),
